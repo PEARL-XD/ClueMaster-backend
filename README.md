@@ -16,10 +16,10 @@ it. MongoDB is not required yet; room and queue state are intentionally in
 memory for this milestone. A MongoDB connection string will be needed when we
 add persistence for accounts, word packs, and match history.
 
-The Flutter client defaults to `http://localhost:3000` for desktop/web. For an
-Android emulator run it with
-`flutter run --dart-define=CLUE_MASTER_SERVER=http://10.0.2.2:3000`; for a
-physical phone, use the development machine's LAN address instead.
+The Flutter client defaults to the deployed service URL
+`https://cluemaster-backend.onrender.com`. For local development, override it
+with `flutter run --dart-define=CLUE_MASTER_SERVER=http://localhost:3000` (or
+`http://10.0.2.2:3000` on an Android emulator).
 
 ## Deploy on Render
 

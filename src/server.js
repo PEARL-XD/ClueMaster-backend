@@ -149,7 +149,19 @@ function teamHasRole(room, team, role) {
 }
 
 function validAssignments(room) {
-  return ['red', 'blue'].every((team) => teamHasRole(room, team, 'spymaster') && teamHasRole(room, team, 'guesser'));
+  const eachTeamHasPlayer = ['red', 'blue'].every((team) =>
+    [...room.players.values()].some((player) => player.team === team),
+  );
+
+  // Allow a two-device private test room to start with one player per team.
+  // The normal custom-room rule remains active once more players join.
+  if (room.code && room.players.size === 2) return eachTeamHasPlayer;
+
+  return ['red', 'blue'].every(
+    (team) =>
+      teamHasRole(room, team, 'spymaster') &&
+      teamHasRole(room, team, 'guesser'),
+  );
 }
 
 function endTurn(room) {
@@ -321,7 +333,15 @@ io.on('connection', (socket) => {
     const player = players.get(socket.data.playerId);
     const room = rooms.get(roomId);
     if (!room || room.hostId !== player?.id) return error(socket, 'Only the room host can start the match.', ack);
-    if (!validAssignments(room)) return error(socket, 'Each team needs at least one Spymaster and one Guesser.', ack);
+    if (!validAssignments(room)) {
+      return error(
+        socket,
+        room.code && room.players.size === 2
+          ? 'Assign the two players to opposite teams to start the test room.'
+          : 'Each team needs at least one Spymaster and one Guesser.',
+        ack,
+      );
+    }
     room.status = 'playing';
     const board = makeBoard(true);
     room.words = board.words;
