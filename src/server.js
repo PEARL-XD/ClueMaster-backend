@@ -79,6 +79,37 @@ function addPlayerToRoom(room, player) {
   room.players.set(player.id, player);
 }
 
+function removePlayerFromRoom(room, player) {
+  if (!room || !player) return false;
+  const removed = room.players.delete(player.id);
+  if (!removed) return false;
+  player.roomId = null;
+  player.team = undefined;
+  player.role = undefined;
+  if (room.hostId === player.id) {
+    room.hostId = room.players.keys().next().value || null;
+  }
+  return true;
+}
+
+function removeRoomIfEmpty(room) {
+  if (room && room.players.size === 0) {
+    rooms.delete(room.id);
+    logEvent('room.deleted', { roomId: room.id, reason: 'empty' });
+    return true;
+  }
+  return false;
+}
+
+function leaveExistingRoom(player, socket) {
+  const currentRoom = player?.roomId ? rooms.get(player.roomId) : null;
+  if (!currentRoom) return;
+  socket.leave(currentRoom.id);
+  removePlayerFromRoom(currentRoom, player);
+  removeRoomIfEmpty(currentRoom);
+  if (rooms.has(currentRoom.id)) emitRoom(io, currentRoom);
+}
+
 function assignPublicMatch(queuePlayers, teamSize) {
   const room = newRoom(queuePlayers[0], teamSize);
   queuePlayers.forEach((player, index) => {
@@ -291,11 +322,12 @@ io.on('connection', (socket) => {
   socket.on('room:create', ({ teamSize } = {}, ack) => {
     const player = players.get(socket.data.playerId);
     if (!player || !Number.isInteger(teamSize) || teamSize < 1 || teamSize > PRIVATE_MAX_TEAM_SIZE) return error(socket, 'Private rooms support up to 10 players per team.', ack);
+    leaveExistingRoom(player, socket);
     const code = Math.random().toString(36).slice(2, 7).toUpperCase();
     const room = newRoom(player, teamSize, code);
     socket.join(room.id);
     const roomDetails = { roomId: room.id, code: room.code };
-    ack?.(roomDetails);
+    ack?.({ ...roomDetails, state: stateFor(room, player) });
     socket.emit('room:created', roomDetails);
     logEvent('room.created', {
       roomId: room.id,
@@ -310,10 +342,11 @@ io.on('connection', (socket) => {
     const room = [...rooms.values()].find((candidate) => candidate.code === code?.trim().toUpperCase() && candidate.status === 'lobby');
     if (!player || !room) return error(socket, 'Room code is invalid or the match has started.', ack);
     if (room.players.size >= room.teamSize * 2) return error(socket, 'This room is full.', ack);
+    if (player.roomId !== room.id) leaveExistingRoom(player, socket);
     addPlayerToRoom(room, player);
     socket.join(room.id);
     const roomDetails = { roomId: room.id, code: room.code };
-    ack?.(roomDetails);
+    ack?.({ ...roomDetails, state: stateFor(room, player) });
     socket.emit('room:joined', roomDetails);
     logEvent('room.joined', {
       roomId: room.id,
@@ -341,6 +374,25 @@ io.on('connection', (socket) => {
       role,
     });
     emitRoom(io, room);
+  });
+
+  socket.on('room:leave', ({ roomId } = {}, ack) => {
+    const player = players.get(socket.data.playerId);
+    const room = rooms.get(roomId || player?.roomId);
+    if (!player || !room || room.players.get(player.id) !== player) {
+      ack?.({ left: false });
+      return;
+    }
+    socket.leave(room.id);
+    removePlayerFromRoom(room, player);
+    removeRoomIfEmpty(room);
+    ack?.({ left: true });
+    logEvent('room.left', {
+      roomId: room.id,
+      playerId: player.id,
+      remainingPlayers: room.players.size,
+    });
+    if (rooms.has(room.id)) emitRoom(io, room);
   });
 
   socket.on('room:start', ({ roomId } = {}, ack) => {
@@ -443,9 +495,12 @@ io.on('connection', (socket) => {
     setTimeout(() => {
       if (!player.connected && player.roomId) {
         const currentRoom = rooms.get(player.roomId);
-        currentRoom?.players.delete(player.id);
+        if (currentRoom) {
+          removePlayerFromRoom(currentRoom, player);
+          removeRoomIfEmpty(currentRoom);
+          if (rooms.has(currentRoom.id)) emitRoom(io, currentRoom);
+        }
         players.delete(player.id);
-        if (currentRoom) emitRoom(io, currentRoom);
       }
     }, RECONNECT_WINDOW_MS);
   });
