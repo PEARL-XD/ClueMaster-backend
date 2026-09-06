@@ -24,6 +24,16 @@ const rooms = new Map();
 const publicQueues = new Map();
 const players = new Map();
 
+function logEvent(event, details = {}) {
+  console.log(
+    JSON.stringify({
+      time: new Date().toISOString(),
+      event,
+      ...details,
+    }),
+  );
+}
+
 function shuffle(items) {
   const result = [...items];
   for (let i = result.length - 1; i > 0; i -= 1) {
@@ -126,6 +136,11 @@ function emitRoom(io, room, event = 'room:state', payloadFactory = (viewer) => s
 
 function error(socket, message, ack) {
   ack?.({ error: message });
+  logEvent('request.rejected', {
+    socketId: socket.id,
+    playerId: socket.data.playerId || null,
+    message,
+  });
   socket.emit('room:error', { message });
 }
 
@@ -177,9 +192,19 @@ const io = new Server(httpServer, {
   cors: { origin: process.env.CORS_ORIGIN || '*' },
 });
 
+io.engine.on('connection_error', (error) => {
+  logEvent('socket.connection_error', {
+    message: error.message,
+    code: error.code,
+  });
+});
+
 io.on('connection', (socket) => {
+  logEvent('socket.connected', { socketId: socket.id });
+
   socket.on('player:register', ({ name, playerId } = {}, ack) => {
     let player = playerId ? players.get(playerId) : null;
+    const reconnecting = Boolean(player);
     if (player) {
       player.socketId = socket.id;
       player.name = name?.trim() || player.name;
@@ -197,6 +222,12 @@ io.on('connection', (socket) => {
     }
     socket.data.playerId = player.id;
     ack?.({ playerId: player.id });
+    logEvent('player.registered', {
+      socketId: socket.id,
+      playerId: player.id,
+      reconnecting,
+      roomId: player.roomId || null,
+    });
   });
 
   socket.on('matchmaking:join', ({ teamSize } = {}, ack) => {
@@ -207,10 +238,20 @@ io.on('connection', (socket) => {
     queue.push(player);
     publicQueues.set(teamSize, queue);
     ack?.({ queued: true, teamSize, position: queue.length });
+    logEvent('matchmaking.joined', {
+      playerId: player.id,
+      teamSize,
+      position: queue.length,
+    });
     socket.emit('matchmaking:queued', { teamSize, position: queue.length });
     if (queue.length >= teamSize * 2) {
       const matchPlayers = queue.splice(0, teamSize * 2);
       const room = assignPublicMatch(matchPlayers, teamSize);
+      logEvent('matchmaking.started', {
+        roomId: room.id,
+        teamSize,
+        playerCount: matchPlayers.length,
+      });
       for (const member of matchPlayers) io.sockets.sockets.get(member.socketId)?.join(room.id);
       emitRoom(io, room);
       emitRoom(io, room, 'match:started', (viewer) => ({ roomId: room.id, state: stateFor(room, viewer) }));
@@ -232,6 +273,11 @@ io.on('connection', (socket) => {
     const roomDetails = { roomId: room.id, code: room.code };
     ack?.(roomDetails);
     socket.emit('room:created', roomDetails);
+    logEvent('room.created', {
+      roomId: room.id,
+      teamSize,
+      playerId: player.id,
+    });
     emitRoom(io, room);
   });
 
@@ -245,6 +291,11 @@ io.on('connection', (socket) => {
     const roomDetails = { roomId: room.id, code: room.code };
     ack?.(roomDetails);
     socket.emit('room:joined', roomDetails);
+    logEvent('room.joined', {
+      roomId: room.id,
+      playerId: player.id,
+      playerCount: room.players.size,
+    });
     emitRoom(io, room);
   });
 
@@ -257,6 +308,12 @@ io.on('connection', (socket) => {
     player.team = team;
     player.role = role;
     ack?.({ assigned: true });
+    logEvent('room.assignment', {
+      roomId: room.id,
+      playerId: player.id,
+      team,
+      role,
+    });
     emitRoom(io, room);
   });
 
@@ -270,6 +327,10 @@ io.on('connection', (socket) => {
     room.words = board.words;
     room.roles = board.roles;
     ack?.({ started: true });
+    logEvent('room.started', {
+      roomId: room.id,
+      playerCount: room.players.size,
+    });
     emitRoom(io, room);
     emitRoom(io, room, 'match:started', (viewer) => ({ roomId: room.id, state: stateFor(room, viewer) }));
   });
@@ -281,6 +342,11 @@ io.on('connection', (socket) => {
     if (room.clue || typeof text !== 'string' || !text.trim() || !Number.isInteger(count) || count < 1 || count > 9) return error(socket, 'Enter a clue and a number from 1 to 9.', ack);
     room.clue = { text: text.trim(), count, remaining: count };
     ack?.({ accepted: true });
+    logEvent('game.clue_accepted', {
+      roomId: room.id,
+      playerId: player.id,
+      count,
+    });
     emitRoom(io, room);
   });
 
@@ -299,6 +365,12 @@ io.on('connection', (socket) => {
       else if (room.clue.remaining <= 0) endTurn(room);
     }
     ack?.({ accepted: true, result: selected });
+    logEvent('game.guess_accepted', {
+      roomId: room.id,
+      playerId: player.id,
+      index,
+      status: room.status,
+    });
     emitRoom(io, room);
     if (room.status === 'finished') io.to(room.id).emit('match:finished', { winner: room.winner, assassin: room.assassin });
   });
@@ -309,6 +381,7 @@ io.on('connection', (socket) => {
     if (!room || room.status !== 'playing' || player?.team !== room.currentTeam || !room.clue) return error(socket, 'You cannot pass this turn right now.', ack);
     endTurn(room);
     ack?.({ accepted: true });
+    logEvent('game.turn_passed', { roomId: room.id, playerId: player.id });
     emitRoom(io, room);
   });
 
@@ -324,6 +397,10 @@ io.on('connection', (socket) => {
 
   socket.on('disconnect', () => {
     const player = players.get(socket.data.playerId);
+    logEvent('socket.disconnected', {
+      socketId: socket.id,
+      playerId: player?.id || null,
+    });
     if (!player) return;
     player.connected = false;
     removeFromQueue(player);
