@@ -1,0 +1,44 @@
+# Installed dependencies; Render/npm recreates these from package-lock.json.
+node_modules/
+
+# Generated build output.
+dist/
+build/
+
+# Local caches and temporary files.
+.cache/
+.eslintcache
+.nyc_output/
+tmp/
+temp/
+*.pid
+*.pid.lock
+*.seed
+*.tsbuildinfo
+
+# Local secrets and machine-specific environment files.
+.env
+.env.*
+!.env.example
+
+# Logs, coverage, and editor/OS metadata.
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+*.log
+coverage/
+test-results/
+
+# Local developer overrides.
+*.local
+*.local.*
+local.settings.json
+
+# Private certificate/key files; keep public examples explicit if ever needed.
+*.pem
+*.key
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
