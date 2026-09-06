@@ -107,6 +107,8 @@ function publicPlayer(player) {
 // tailored state; every Spymaster can see the key, Guessers only see words and
 // cards that have already been revealed.
 function stateFor(room, viewer) {
+  const remaining = (team) =>
+    room.roles.filter((role, index) => role === team && !room.revealed.has(index)).length;
   return {
     roomId: room.id,
     code: room.code || null,
@@ -119,6 +121,8 @@ function stateFor(room, viewer) {
       ? { text: room.clue.text, count: room.clue.count, remaining: room.clue.remaining }
       : null,
     words: room.words,
+    redRemaining: remaining('red'),
+    blueRemaining: remaining('blue'),
     revealed: [...room.revealed],
     revealedRoles: [...room.revealed].map((index) => ({ index, role: room.roles[index] })),
     players: [...room.players.values()].map(publicPlayer),
@@ -148,14 +152,22 @@ function teamHasRole(room, team, role) {
   return [...room.players.values()].some((player) => player.team === team && player.role === role);
 }
 
+function connectedPlayers(room) {
+  return [...room.players.values()].filter((player) => player.connected !== false);
+}
+
+function isTwoPlayerTestRoom(room) {
+  return Boolean(room.code) && connectedPlayers(room).length === 2;
+}
+
 function validAssignments(room) {
   const eachTeamHasPlayer = ['red', 'blue'].every((team) =>
-    [...room.players.values()].some((player) => player.team === team),
+    connectedPlayers(room).some((player) => player.team === team),
   );
 
   // Allow a two-device private test room to start with one player per team.
   // The normal custom-room rule remains active once more players join.
-  if (room.code && room.players.size === 2) return eachTeamHasPlayer;
+  if (isTwoPlayerTestRoom(room)) return eachTeamHasPlayer;
 
   return ['red', 'blue'].every(
     (team) =>
@@ -315,7 +327,9 @@ io.on('connection', (socket) => {
     const player = players.get(socket.data.playerId);
     const room = rooms.get(roomId);
     if (!player || !room || room.players.get(player.id) !== player) return error(socket, 'You are not in this room.', ack);
-    if (room.status === 'playing' && room.clue) return error(socket, 'Wait until the current turn ends before changing roles.', ack);
+    if (room.status === 'playing' && room.clue && !isTwoPlayerTestRoom(room)) {
+      return error(socket, 'Wait until the current turn ends before changing roles.', ack);
+    }
     if (!['red', 'blue'].includes(team) || !['spymaster', 'guesser'].includes(role)) return error(socket, 'Invalid team or role.', ack);
     player.team = team;
     player.role = role;
@@ -336,7 +350,7 @@ io.on('connection', (socket) => {
     if (!validAssignments(room)) {
       return error(
         socket,
-        room.code && room.players.size === 2
+        isTwoPlayerTestRoom(room)
           ? 'Assign the two players to opposite teams to start the test room.'
           : 'Each team needs at least one Spymaster and one Guesser.',
         ack,
